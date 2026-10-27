@@ -15,8 +15,8 @@ Healthcare organizations want to build AI on their data, but the data isn't read
 | Phase | What | Status |
 |---|---|---|
 | 0 | Scaffolding + messy data generator | ✅ Done |
-| 1 | Ingestion, cleaning, **patient matching**, quarantine | ⏳ Next |
-| 2 | Governance: PHI masking, data dictionary, access rules, audit log | — |
+| 1 | Ingestion, cleaning, **patient matching**, quarantine | ✅ Done |
+| 2 | Governance: PHI masking, data dictionary, access rules, audit log | ⏳ Next |
 | 3 | Quality gates that block the pipeline | — |
 | 4 | AI-ready outputs: features, train/eval split, labels, data card | — |
 | 5 | One-command demo + interview story | — |
@@ -26,10 +26,29 @@ Healthcare organizations want to build AI on their data, but the data isn't read
 Requires Python 3.10+.
 
 ```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python src/generate_messy_data.py   # writes data/raw/ and data/answer_key/
 python src/inspect_raw.py           # SQL profile proving the data is messy
+python src/pipeline.py              # Phase 1: clean, match, quarantine -> data/clean/
+python src/evaluate_phase1.py       # grade matching against the answer key
+pytest                              # unit tests for the cleaning and matching rules
 ```
+
+## Phase 1 results (seed 42)
+
+Patient matching, graded on record pairs against the answer key:
+
+| Method | Pairs merged | Wrong merges | Missed | Precision | Recall |
+|---|---|---|---|---|---|
+| Exact match on raw first + last + DOB | 26 | 0 | 245 | 1.000 | 0.096 |
+| Last name + DOB + phone (ignores first name) | 202 | **8** | 77 | 0.960 | 0.716 |
+| **This pipeline** | 246 | **0** | 25 | **1.000** | **0.908** |
+
+- The second baseline looks reasonable but merges **twins** (same last name, DOB and phone) into one chart.
+- All 25 missed pairs are in the human review queue (31 pairs, 25 truly the same person). They are missed on purpose: a record with no DOB or no first name could be a twin or a same-named relative.
+- 1,304 of 1,304 clean encounters link to the correct person. All 26 true orphan encounters are quarantined, and none of the 54 encounters whose MRN lost its leading zeros were wrongly called orphans.
+- Seeds 7 and 2026 give the same picture: 0 wrong merges, recall 0.94 and 0.91.
 
 The same `--seed` always produces identical files, so results are reproducible.
 
@@ -39,9 +58,17 @@ The same `--seed` always produces identical files, so results are reproducible.
 src/
   generate_messy_data.py   # Phase 0: creates the messy raw data + answer key
   inspect_raw.py           # Phase 0: DuckDB SQL profile of the raw data
+  clean.py                 # Phase 1: one small function per kind of repair
+  match_patients.py        # Phase 1: blocking, scoring, vetoes, clustering
+  pipeline.py              # Phase 1: raw -> clean tables, quarantine, review queue
+  evaluate_phase1.py       # Phase 1: grades the pipeline (the only reader of answer_key/)
+tests/                     # pytest unit tests for cleaning and matching rules
 data/                      # generated, not committed (see .gitignore)
   raw/                     # what the pipeline is allowed to read
   answer_key/              # ground truth for GRADING only; the pipeline never reads it
+  clean/                   # patient_records, golden_patients, encounters
+  quarantine/              # rows held back, raw values kept, with a reason
+  review/                  # possible matches for a human to decide
 BUILD_LOG.md               # decisions and progress, phase by phase
 ```
 
@@ -59,6 +86,9 @@ Everything runs on a laptop. At company scale, each piece maps to a managed GCP 
 | DuckDB | BigQuery | Same SQL ideas; serverless and scales to billions of rows |
 | Python scripts | Dataflow (or Cloud Run jobs for small batch) | Dataflow when data outgrows one machine |
 | Running scripts in order / scheduled runs | Cloud Composer (managed Airflow) | DAG with retries, alerts, backfills |
+| `match_patients.py` | Custom matching in BigQuery SQL / Dataflow, or a managed MPI (master patient index) | Blocking is what makes this possible at scale |
+| `data/quarantine/` tables | Quarantine dataset in BigQuery | Same idea: bad rows kept with a reason, never silently dropped |
+| `data/review/` queue | A review table + simple app (e.g. AppSheet or Looker) for data stewards | Humans decide uncertain matches |
 
 More rows (masking, access rules, audit logs, quality checks) are added as those phases are built.
 

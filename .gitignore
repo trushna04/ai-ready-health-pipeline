@@ -2,6 +2,12 @@
 data/raw/
 data/answer_key/
 
+# Pipeline outputs: recreate with `python src/pipeline.py`
+data/clean/
+data/quarantine/
+data/review/
+data/eval/
+
 # Python
 __pycache__/
 *.pyc

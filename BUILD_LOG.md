@@ -56,3 +56,56 @@ Full counts: `data/answer_key/mess_manifest.json`.
 ### Open questions for Phase 1
 - Which fields should a match require, and which only add confidence?
 - What happens to records we can't confidently match: merge, keep separate, or send to human review?
+
+---
+
+## Phase 1: Ingestion, cleaning, patient matching, quarantine (2026-10-27)
+
+### What was built
+- `src/clean.py`: one small function per repair (missing tokens, 5 date formats, phone, ZIP, sex, payer names, vitals, MRN zero-padding).
+- `src/match_patients.py`: blocking → field-by-field scoring with vetoes → auto_match / review / non_match → clusters.
+- `src/pipeline.py`: raw → `data/clean/` (patient records, golden patients, encounters), `data/quarantine/`, `data/review/match_review_queue.csv`.
+- `src/evaluate_phase1.py`: grades matching and encounter linkage against the answer key, next to two naive baselines.
+- `tests/test_phase1.py`: 13 pytest tests, including twins, households, nicknames, typos and the two-digit-year trap.
+
+### Answers to the Phase 0 open questions
+**Which fields must a match have?** First name (after nickname → formal name) and exact DOB, for an *automatic* merge. Phone and ZIP only add confidence, because twins and households share them. Some disagreements are vetoes: different first names, different sex, or DOBs that don't even share a month and day.
+
+**What happens to uncertain records?** They stay separate and go to a human review queue. A wrong merge mixes two people's medical histories (wrong allergies, wrong meds), which is far worse than a leftover duplicate. So the rules trade some recall for zero wrong merges.
+
+### Decisions and tradeoffs
+| Decision | Chosen | Alternative | Why |
+|---|---|---|---|
+| Matching method | Hand-written rules with points and vetoes | ML model / Splink-style probabilistic weights | Every decision is explainable in a review queue; no training labels needed |
+| Auto-merge rule | Requires first name AND exact DOB | Score threshold only | A high score can still be a twin with a blank first name |
+| Uncertain pairs | Human review queue, not merged | Merge above a lower threshold | Wrong merges are the dangerous error in healthcare |
+| Candidate pairs | Blocking on DOB, phone, first name + last initial | Compare every pair | 1,247 comparisons instead of 261,003; the only way this works at millions of rows |
+| Last-name typos | Allow one edit or neighbour swap | Fuzzy score (Jaro-Winkler) | Easy to explain: "one typo apart" |
+| Two-digit years | Pivot on extract date (`'52` → 1952, `'22` → 2022) | Python default (`'52` → 2052) | Python's default breaks every DOB before 1969 |
+| Impossible DOB | Set to NULL and flag | Quarantine the whole patient | The person is real; only one field is wrong |
+| Impossible vitals | Set to NULL and flag | Quarantine the visit | The visit happened; one bad number shouldn't hide it |
+| Discharge before admit | Quarantine | Swap the dates | Probably swapped, but we can't know the true dates |
+| MRN lost leading zeros | Pad to 8 digits, only if the padded MRN exists | Pad always / give up | A repair is only safe if it's confirmed |
+| Golden record | Most common name/DOB; most recent contact info | Most recent everything | A one-off typo gets outvoted |
+
+### Results (seed 42)
+| Method | Pairs merged | Wrong merges | Missed | Precision | Recall |
+|---|---|---|---|---|---|
+| Exact match on raw text | 26 | 0 | 245 | 1.000 | 0.096 |
+| Last name + DOB + phone | 202 | 8 | 77 | 0.960 | 0.716 |
+| **Pipeline** | 246 | **0** | 25 | **1.000** | **0.908** |
+
+- 723 clean patient records → **519 golden patients** (500 true people). The 19 extra are the 25 missed pairs, all of them in the review queue.
+- Review queue: 31 pairs, 25 truly the same person. One of the 6 "no" pairs is the twin trap working: a Jackson record with a blank first name matches twin Jennifer Jackson on everything else.
+- Encounters: 1,400 raw → 39 exact duplicates dropped → 57 quarantined (31 discharge-before-admit, 26 orphan MRN) → 1,304 clean, **all linked to the correct person**. All 54 lost-leading-zero MRNs were repaired.
+- Checked on seeds 7 and 2026 so the rules aren't tuned to one dataset: 0 wrong merges both times, recall 0.94 and 0.91.
+
+### Things noticed while building
+- **Bug caught by the evaluation:** pandas stores a missing value as `NaN`, and `NaN is not None`. A missing sex looked like a *different* sex, vetoed good matches and dropped recall to 0.73. Fixed by converting `NaN` → `None` before matching. Without the answer key, this would have shipped silently.
+- 6 of the 7 impossible DOBs were caught. The 7th was a "-100 years" typo that landed in a plausible year (the 1910s). Range checks can't catch an error that looks normal.
+- The nickname list in `clean.py` covers the nicknames this generator uses. Real data would need a much bigger public nickname list, so this is partly testing against known problems (see README limitations).
+- 6 of the 31 review pairs are only "same first + last name, no DOB": weak evidence that wastes reviewer time. Raising the review threshold would drop them but also lose some true pairs. Left as is for now.
+
+### Open questions for Phase 2
+- Which columns are PHI, and who is allowed to see each one unmasked?
+- How do we find PHI hidden in free-text notes (68 leaked phones, names and MRNs), not just in columns?
