@@ -1,0 +1,12 @@
+# Generated data: recreate with `python src/generate_messy_data.py`
+data/raw/
+data/answer_key/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
