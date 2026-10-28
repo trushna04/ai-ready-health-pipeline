@@ -101,3 +101,98 @@ Location: `data/deidentified/encounters_deid.csv` · Tier: **deidentified**
 | `diastolic_bp` | clinical | — | Diastolic blood pressure, mmHg. Blank if missing or implausible. |
 | `heart_rate` | clinical | — | Heart rate, beats per minute. Blank if missing or implausible. |
 | `data_issues` | operational | — | Semicolon-separated cleaning flags (e.g. dob_out_of_range). |
+
+## `ai_features`
+
+One row per visit: model-ready features, split, and label.  
+Location: `data/ai_ready/features.csv` · Tier: **deidentified**
+
+| Column | Sensitivity | Safe Harbor | Description |
+|---|---|---|---|
+| `encounter_key` | operational | — | Pseudonym for encounter_id: keyed hash. |
+| `patient_key` | operational | — | Pseudonym for golden_patient_id: keyed hash, can't be reversed without the secret key. |
+| `split` | operational | — | train or eval. Assigned per PATIENT, so one patient is never on both sides. |
+| `source_system` | operational | — | clinic_a, clinic_b or er_system. |
+| `encounter_type` | clinical | — | outpatient, emergency or inpatient. |
+| `admit_date_shifted` | quasi_identifier | — | Admit date moved back by a secret per-patient offset (1-365 days). |
+| `age_at_admit` | quasi_identifier | — | Age in whole years at the visit, capped at 90. |
+| `age_band` | quasi_identifier | — | Age as of the extract date in 10-year bands; everyone 90+ is grouped as '90+'. |
+| `sex` | quasi_identifier | — | F or M. |
+| `zip3` | quasi_identifier | — | First 3 ZIP digits; '000' for low-population areas (Safe Harbor rule). |
+| `insurance` | clinical | — | Canonical payer name. |
+| `n_source_records` | operational | — | How many registrations were matched into this person. |
+| `prior_visit_count` | clinical | — | How many earlier visits this patient had (order is true; dates are shifted per patient). |
+| `systolic_bp` | clinical | — | Systolic blood pressure, mmHg. Blank if missing or implausible. |
+| `diastolic_bp` | clinical | — | Diastolic blood pressure, mmHg. Blank if missing or implausible. |
+| `heart_rate` | clinical | — | Heart rate, beats per minute. Blank if missing or implausible. |
+| `n_vitals_missing` | clinical | — | How many of systolic BP, diastolic BP, heart rate are blank (0-3). |
+| `diagnosis_note_scrubbed` | free_text | — | Diagnosis note with phones, MRNs and names replaced by [PHONE], [MRN], [NAME]. |
+| `length_of_stay_days` | clinical | — | Discharge date minus admit date, in days. |
+| `diagnosis_category` | clinical | — | Label: one of 6 diagnosis categories. Synthetic ground truth, standing in for chart review. |
+
+## `note_task_train`
+
+Task A training rows: scrubbed note -> diagnosis category.  
+Location: `data/ai_ready/note_classification/train.csv` · Tier: **deidentified**
+
+| Column | Sensitivity | Safe Harbor | Description |
+|---|---|---|---|
+| `encounter_key` | operational | — | Pseudonym for encounter_id: keyed hash. |
+| `patient_key` | operational | — | Pseudonym for golden_patient_id: keyed hash, can't be reversed without the secret key. |
+| `diagnosis_note_scrubbed` | free_text | — | Diagnosis note with phones, MRNs and names replaced by [PHONE], [MRN], [NAME]. |
+| `diagnosis_category` | clinical | — | Label: one of 6 diagnosis categories. Synthetic ground truth, standing in for chart review. |
+
+## `note_task_eval`
+
+Task A evaluation rows, tagged with hard-case slices.  
+Location: `data/ai_ready/note_classification/eval.csv` · Tier: **deidentified**
+
+| Column | Sensitivity | Safe Harbor | Description |
+|---|---|---|---|
+| `encounter_key` | operational | — | Pseudonym for encounter_id: keyed hash. |
+| `patient_key` | operational | — | Pseudonym for golden_patient_id: keyed hash, can't be reversed without the secret key. |
+| `diagnosis_note_scrubbed` | free_text | — | Diagnosis note with phones, MRNs and names replaced by [PHONE], [MRN], [NAME]. |
+| `diagnosis_category` | clinical | — | Label: one of 6 diagnosis categories. Synthetic ground truth, standing in for chart review. |
+| `eval_slices` | operational | — | Hard-case tags on eval rows: negation, phi_redacted, empty_note, seen_in_train, unseen_text. |
+
+## `los_task_train`
+
+Task B training rows: admission-time features -> length of stay.  
+Location: `data/ai_ready/length_of_stay/train.csv` · Tier: **deidentified**
+
+| Column | Sensitivity | Safe Harbor | Description |
+|---|---|---|---|
+| `encounter_key` | operational | — | Pseudonym for encounter_id: keyed hash. |
+| `patient_key` | operational | — | Pseudonym for golden_patient_id: keyed hash, can't be reversed without the secret key. |
+| `age_at_admit` | quasi_identifier | — | Age in whole years at the visit, capped at 90. |
+| `sex` | quasi_identifier | — | F or M. |
+| `insurance` | clinical | — | Canonical payer name. |
+| `encounter_type` | clinical | — | outpatient, emergency or inpatient. |
+| `source_system` | operational | — | clinic_a, clinic_b or er_system. |
+| `systolic_bp` | clinical | — | Systolic blood pressure, mmHg. Blank if missing or implausible. |
+| `diastolic_bp` | clinical | — | Diastolic blood pressure, mmHg. Blank if missing or implausible. |
+| `heart_rate` | clinical | — | Heart rate, beats per minute. Blank if missing or implausible. |
+| `n_vitals_missing` | clinical | — | How many of systolic BP, diastolic BP, heart rate are blank (0-3). |
+| `prior_visit_count` | clinical | — | How many earlier visits this patient had (order is true; dates are shifted per patient). |
+| `length_of_stay_days` | clinical | — | Discharge date minus admit date, in days. |
+
+## `los_task_eval`
+
+Task B evaluation rows.  
+Location: `data/ai_ready/length_of_stay/eval.csv` · Tier: **deidentified**
+
+| Column | Sensitivity | Safe Harbor | Description |
+|---|---|---|---|
+| `encounter_key` | operational | — | Pseudonym for encounter_id: keyed hash. |
+| `patient_key` | operational | — | Pseudonym for golden_patient_id: keyed hash, can't be reversed without the secret key. |
+| `age_at_admit` | quasi_identifier | — | Age in whole years at the visit, capped at 90. |
+| `sex` | quasi_identifier | — | F or M. |
+| `insurance` | clinical | — | Canonical payer name. |
+| `encounter_type` | clinical | — | outpatient, emergency or inpatient. |
+| `source_system` | operational | — | clinic_a, clinic_b or er_system. |
+| `systolic_bp` | clinical | — | Systolic blood pressure, mmHg. Blank if missing or implausible. |
+| `diastolic_bp` | clinical | — | Diastolic blood pressure, mmHg. Blank if missing or implausible. |
+| `heart_rate` | clinical | — | Heart rate, beats per minute. Blank if missing or implausible. |
+| `n_vitals_missing` | clinical | — | How many of systolic BP, diastolic BP, heart rate are blank (0-3). |
+| `prior_visit_count` | clinical | — | How many earlier visits this patient had (order is true; dates are shifted per patient). |
+| `length_of_stay_days` | clinical | — | Discharge date minus admit date, in days. |

@@ -213,3 +213,50 @@ Full counts: `data/answer_key/mess_manifest.json`.
 - What's the ML task: predicting the diagnosis category from the note, or something structured like length of stay?
 - How do we split train/eval so the **same patient** never appears in both (leakage)?
 - What goes in the data card: known gaps, the 7% re-identification risk, synthetic-data limits?
+
+---
+
+## Phase 4: AI-ready outputs (2026-10-28)
+
+### Task decision
+Both tasks: **A.** scrubbed note → 6 diagnosis categories (clinical NLP), and **B.** admission-time features → length of stay (tabular).
+
+### What was built
+- `src/build_ai_dataset.py`: one feature row per visit from the **published** de-identified tables, a patient-level train/eval split, labels, two task datasets. It has its own gate (same BLOCK/WARN machinery as Phase 3) and writes nothing if a check fails.
+- `src/evaluate_phase4.py`: plain-Python baselines that test the eval set itself, plus a hidden-leakage check that only the answer key can do.
+- `src/data_card.py`: generates `docs/data_card.md`; every number is computed from the files.
+- `data_dictionary.py`: 5 new columns and 5 new tables, all classified.
+- `tests/test_phase4.py`: 6 tests (46 in total).
+
+### Answers to the Phase 3 open questions
+**ML task?** Both, so the card can contrast a task with signal (A) against one without (B).
+**Same patient on both sides?** Split by a hash of `patient_key`: deterministic, no list to store, and one patient can't be split. A gate blocks if any patient key is on both sides. But the matcher can leave one real person with two keys, so `evaluate_phase4.py` checks that with the answer key: 6 people leak on seed 42.
+**What goes in the card?** Coverage, what's missing, biases, baselines, and a hand-written "must NOT be trusted to" list.
+
+### Decisions and tradeoffs
+| Decision | Chosen | Alternative | Why |
+|---|---|---|---|
+| Split unit | Patient | Visit | A visit-level split lets a model recognise patients; eval would be inflated |
+| Split method | Hash of patient key, 20% eval | Random sample saved to a file | Same answer every run, nothing extra to store or lose |
+| Labels | Generator ground truth, attached by encounter pseudonym | Keyword rules ("silver labels") | Perfect labels let us test the eval set; the card says real labels are noisy |
+| LOS features | Admission-time only; discharge date blocked as leaky | Use every column | Discharge date gives the target away exactly |
+| Empty notes | Kept in eval, removed from train | Drop everywhere | Nothing to learn from, but a model must be tested on saying "unknown" |
+| Baselines | Plain Python rules | scikit-learn models | Stack rule (Python/SQL/DuckDB); and the point is testing the eval, not winning it |
+| Card numbers | Generated from files | Hand-written | A card that drifts from the data is worse than none |
+
+### Results (seed 42)
+- 1,304 visits, 461 patients → train 354 / eval 107 patients. Gate: 6 pass, 0 fail.
+- Note task: first-mention rule 85.5% (68.8% on negations); negation-aware 96.7%; memoriser 95.7%. Every miss is an empty note.
+- LOS: MAE 0.62 (overall mean) → 0.20 (by visit type); adding age makes inpatient error worse (2.50 → 2.81).
+- 6 of 447 real people are in both splits via unresolved duplicates.
+- Seeds 7 and 2026: same pattern (memoriser 94.9% / 95.1%; leakage 1 and 7 people).
+
+### Things noticed while building
+- **The first keyword baseline (most hits wins) got 100% on the negation slice.** In every negation template, the true diagnosis has more keywords than the negated one. The slice only caught something once the baseline was the common "first diagnosis word wins" rule. Lesson: a hard-case slice is only as hard as the cases in it, so test it with a model that should fail.
+- **The eval set can't tell a real NLP model from a regex**, because 96% of eval notes are copies of training notes. That's the most important line in the data card.
+- **LOS has no learnable signal**, by construction. Shipping that task honestly ("don't use this") is more useful than tuning a model on noise.
+- Cleaning bias: the 57 quarantined visits (bad dates, orphans) never reach the model, so "messy" visits are invisible to it.
+
+### Open questions for Phase 5
+- One command for everything: should it also build the AI dataset and card, or stop at publishing?
+- What would change at real scale: notes from a real EHR, coder labels with agreement scores, and resolving the review queue before splitting.

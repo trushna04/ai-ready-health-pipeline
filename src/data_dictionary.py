@@ -63,6 +63,12 @@ COLUMNS = {
     "source_systems":    ("operational", "", "Comma-separated systems this person appears in."),
     "n_source_records":  ("operational", "", "How many registrations were matched into this person."),
     "data_issues":       ("operational", "", "Semicolon-separated cleaning flags (e.g. dob_out_of_range)."),
+    # --- AI-ready outputs (Phase 4) -------------------------------------
+    "split":             ("operational", "", "train or eval. Assigned per PATIENT, so one patient is never on both sides."),
+    "diagnosis_category": ("clinical", "", "Label: one of 6 diagnosis categories. Synthetic ground truth, standing in for chart review."),
+    "eval_slices":       ("operational", "", "Hard-case tags on eval rows: negation, phi_redacted, empty_note, seen_in_train, unseen_text."),
+    "prior_visit_count": ("clinical", "", "How many earlier visits this patient had (order is true; dates are shifted per patient)."),
+    "n_vitals_missing":  ("clinical", "", "How many of systolic BP, diastolic BP, heart rate are blank (0-3)."),
 }
 
 # table -> (location, tier, description). "phi" tables: data stewards only.
@@ -72,6 +78,11 @@ TABLES = {
     "encounters":      ("data/clean/encounters.csv", "phi", "Clean visits linked to golden_patient_id."),
     "patients_deid":   ("data/deidentified/patients_deid.csv", "deidentified", "golden_patients with identifiers removed or generalised."),
     "encounters_deid": ("data/deidentified/encounters_deid.csv", "deidentified", "encounters with pseudonyms, shifted dates and scrubbed notes."),
+    "ai_features":     ("data/ai_ready/features.csv", "deidentified", "One row per visit: model-ready features, split, and label."),
+    "note_task_train": ("data/ai_ready/note_classification/train.csv", "deidentified", "Task A training rows: scrubbed note -> diagnosis category."),
+    "note_task_eval":  ("data/ai_ready/note_classification/eval.csv", "deidentified", "Task A evaluation rows, tagged with hard-case slices."),
+    "los_task_train":  ("data/ai_ready/length_of_stay/train.csv", "deidentified", "Task B training rows: admission-time features -> length of stay."),
+    "los_task_eval":   ("data/ai_ready/length_of_stay/eval.csv", "deidentified", "Task B evaluation rows."),
 }
 
 
@@ -112,6 +123,8 @@ def main():
     import pandas as pd
     table_columns = {}
     for table, (location, _, _) in TABLES.items():
+        if not Path(location).exists():   # e.g. AI tables before Phase 4 has run
+            continue
         columns = list(pd.read_csv(location, nrows=0).columns)
         check_columns(table, columns)
         table_columns[table] = columns

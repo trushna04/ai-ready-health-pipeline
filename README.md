@@ -18,8 +18,8 @@ Healthcare organizations want to build AI on their data, but the data isn't read
 | 1 | Ingestion, cleaning, **patient matching**, quarantine | ✅ Done |
 | 2 | Governance: PHI masking, data dictionary, access rules, audit log | ✅ Done |
 | 3 | Quality gates that block the pipeline | ✅ Done |
-| 4 | AI-ready outputs: features, train/eval split, labels, data card | ⏳ Next |
-| 5 | One-command demo + interview story | — |
+| 4 | AI-ready outputs: features, train/eval split, labels, data card | ✅ Done |
+| 5 | One-command demo + interview story | ⏳ Next |
 
 ## Quickstart
 
@@ -37,7 +37,10 @@ python src/access.py                # Phase 2: role-based access demo, writes th
 python src/evaluate_phase2.py       # check for PHI leaks, re-identification risk, audit tampering
 python src/run_pipeline.py          # Phase 3: every step, with quality gates; stops on a failure
 python src/demo_gate_failures.py    # Phase 3: breaks the data 9 ways, proves each gate blocks it
-pytest                              # unit tests for the cleaning and matching rules
+python src/build_ai_dataset.py      # Phase 4: features, patient-level split, labels -> data/ai_ready/
+python src/evaluate_phase4.py       # Phase 4: baselines that test the eval set itself
+python src/data_card.py             # Phase 4: writes docs/data_card.md
+pytest                              # 46 unit tests
 ```
 
 ## Phase 1 results (seed 42)
@@ -94,6 +97,32 @@ Today's real run publishes with 2 honest warnings: 7.1% of patients are unique o
 
 The same `--seed` always produces identical files, so results are reproducible.
 
+## Phase 4 results (seed 42)
+
+Built **only from the published, gated, de-identified tables**. Two tasks:
+
+| | Task A: note → diagnosis category | Task B: length of stay |
+|---|---|---|
+| Input | scrubbed free-text note | admission-time features (age, sex, insurance, visit type, source, vitals, prior visits) |
+| Train / eval rows | 969 / 303 | 1,001 / 303 |
+| Split | by **patient**: 354 train, 107 eval, none on both sides | same |
+
+**What the evaluation revealed** (`evaluate_phase4.py`, baselines in plain Python):
+
+| Note model | All | Negated notes | Empty notes |
+|---|---|---|---|
+| First diagnosis word wins | 85.5% | **68.8%** | 0% |
+| Same, negation-aware | 96.7% | 100% | 0% |
+| Memorise exact text from train | 95.7% | 98.2% | 0% |
+
+- The **negation slice works**: "No hx of diabetes. BP elevated…" fools a first-mention rule, and handling negation fixes it.
+- **The task is too easy to trust a score.** 95.7% of eval notes appear word for word in training (only 58 distinct notes), so a memoriser scores 95.7%.
+- **Length of stay has no signal** beyond visit type: adding age makes inpatient error worse (2.5 → 2.8 days).
+- **Hidden leakage:** 6 real people have visits on both sides, because their duplicates are still in the review queue. The patient split is only as good as the matching.
+- Same picture on seeds 7 and 2026.
+
+Everything above, plus coverage, biases and a "must NOT be trusted to" list, is in the generated [**data card**](docs/data_card.md).
+
 ## Repo layout
 
 ```
@@ -111,7 +140,11 @@ src/
   quality_gates.py         # Phase 3: 36 BLOCK/WARN checks, no answer key needed
   run_pipeline.py          # Phase 3: runs everything with gates; publishes only on a pass
   demo_gate_failures.py    # Phase 3: fault injection, proves each gate fires
+  build_ai_dataset.py      # Phase 4: AI-ready features, split, labels, task files
+  evaluate_phase4.py       # Phase 4: baselines + hidden-leakage check
+  data_card.py             # Phase 4: generates docs/data_card.md
 docs/data_dictionary.md    # generated: every column, classified
+docs/data_card.md          # generated: what the AI dataset covers, its biases, what not to trust
 tests/                     # pytest unit tests for cleaning and matching rules
 data/                      # generated, not committed (see .gitignore)
   raw/                     # what the pipeline is allowed to read
@@ -123,6 +156,7 @@ data/                      # generated, not committed (see .gitignore)
   audit/                   # access log (JSON lines, hash-chained)
   staging/                 # de-identified tables waiting for the deid gate
   quality/                 # gate reports, run history, last good run's counts
+  ai_ready/                # features, train/eval files per task, eval results
 BUILD_LOG.md               # decisions and progress, phase by phase
 ```
 
@@ -151,8 +185,9 @@ Everything runs on a laptop. At company scale, each piece maps to a managed GCP 
 | `quality_gates.py` | Dataplex data quality scans / dbt tests / Great Expectations | Same BLOCK/WARN idea as declarative rules |
 | `run_pipeline.py` (stop on FAIL) | Cloud Composer DAG with a gate task; failure halts downstream tasks and alerts | Retries, alerts, run history built in |
 | staging → publish swap | Write to a staging dataset, then swap the table/view used by readers | Readers never see half-checked data |
-
-More rows (masking, access rules, audit logs, quality checks) are added as those phases are built.
+| `data/ai_ready/` + patient-hash split | BigQuery feature tables → Vertex AI datasets (or Vertex AI Feature Store) | Split column stored with the data, so every model uses the same split |
+| `evaluate_phase4.py` baselines + slices | Vertex AI Model Evaluation, with eval slices | Track scores per hard-case slice, not just overall |
+| `docs/data_card.md` | Model/data cards in Vertex AI Model Registry or Dataplex | The limits travel with the dataset |
 
 ## What this project does NOT prove
 

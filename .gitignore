@@ -12,6 +12,7 @@ data/audit/
 data/staging/
 data/quality/
 data/deidentified.incoming/
+data/ai_ready/
 
 # Python
 __pycache__/
