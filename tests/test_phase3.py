@@ -88,3 +88,18 @@ def test_publish_replaces_whole_folder(tmp_path):
     (published / "old.csv").write_text("y")
     publish(staging, published)
     assert [p.name for p in published.iterdir()] == ["new.csv"]
+
+
+def test_freshness_per_source_system():
+    """One dead feed must be caught even when the other systems are fresh."""
+    records = pd.DataFrame({"source_system": ["clinic_a", "er_system"],
+                            "record_updated_at": ["2026-10-25T09:00:00", "2026-10-25T09:00:00"]})
+
+    def encounters(er_admit):
+        return pd.DataFrame({"source_system": ["clinic_a", "er_system"],
+                             "admit_date": ["2026-10-24", er_admit]})
+
+    assert g.check_freshness("s", records, encounters("2026-10-24"), "2026-10-26").status == "PASS"
+    stale_records = records.assign(record_updated_at=["2026-10-25T09:00:00", "2026-01-01T09:00:00"])
+    assert g.check_freshness("s", stale_records, encounters("2026-10-10"), "2026-10-26").status == "WARN"  # 16 days
+    assert g.check_freshness("s", stale_records, encounters("2026-08-01"), "2026-10-26").status == "FAIL"  # 86 days

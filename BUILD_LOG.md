@@ -101,6 +101,7 @@ Full counts: `data/answer_key/mess_manifest.json`.
 - Checked on seeds 7 and 2026 so the rules aren't tuned to one dataset: 0 wrong merges both times, recall 0.94 and 0.91.
 
 ### Things noticed while building
+- Freshness was missing from the first version, even though it was in the Phase 3 spec. Every other check passes happily on stale data, so a dead feed is invisible without it. Added in review, with a fault-injection case.
 - **Bug caught by the evaluation:** pandas stores a missing value as `NaN`, and `NaN is not None`. A missing sex looked like a *different* sex, vetoed good matches and dropped recall to 0.73. Fixed by converting `NaN` → `None` before matching. Without the answer key, this would have shipped silently.
 - 6 of the 7 impossible DOBs were caught. The 7th was a "-100 years" typo that landed in a plausible year (the 1910s). Range checks can't catch an error that looks normal.
 - The nickname list in `clean.py` covers the nicknames this generator uses. Real data would need a much bigger public nickname list, so this is partly testing against known problems (see README limitations).
@@ -147,6 +148,7 @@ Full counts: `data/answer_key/mess_manifest.json`.
 - Audit log: chain verifies; an edited copy fails at the edited entry, and a deleted entry is caught at the next one.
 
 ### Things noticed while building
+- Freshness was missing from the first version, even though it was in the Phase 3 spec. Every other check passes happily on stale data, so a dead feed is invisible without it. Added in review, with a fault-injection case.
 - **"Safe Harbor-compliant" isn't the same as "safe".** The first version published birth year, as Safe Harbor allows. The k-anonymity check showed 57% of patients were the only one with their birth year + sex + ZIP3. Switching to age bands cut that to 7%.
 - **The first leak scan raised a false alarm:** 33 shifted visit dates matched *some* patient's DOB. They were coincidences (a shifted date landing on a toddler's birthday), so the check now asks the real question: does a patient's *own* DOB appear in their *own* rows?
 - pandas writes integer columns that have blanks as floats (`140.0`). Fixed by using the nullable `Int64` type in both the pipeline and de-identification.
@@ -161,11 +163,12 @@ Full counts: `data/answer_key/mess_manifest.json`.
 ## Phase 3: Quality gates that block the pipeline (2026-10-28)
 
 ### What was built
-- `src/quality_gates.py`: 35 checks in two stages, each marked BLOCK or WARN. No check reads the answer key, because production data doesn't come with one.
+- `src/quality_gates.py`: 36 checks in two stages, each marked BLOCK or WARN. No check reads the answer key, because production data doesn't come with one.
 - `src/run_pipeline.py`: runs clean → gate → de-identify into **staging** → gate → publish. A failed gate stops the run, and `data/deidentified/` keeps the last good version. Every run is logged to `data/quality/run_history.jsonl`. `--strict` (production mode) turns the dev secret key into a blocker.
-- `src/demo_gate_failures.py`: injects 8 realistic faults into in-memory copies and confirms the expected check blocks each one.
+- `src/demo_gate_failures.py`: injects 9 realistic faults into in-memory copies and confirms the expected check blocks each one.
 - `src/deidentify.py`: now takes an output folder, so the orchestrator can stage before publishing.
-- `tests/test_phase3.py`: 11 tests (39 in total).
+- `tests/test_phase3.py`: 12 tests (40 in total).
+- Each gate writes `data/quality/quality_report_<gate>.md` for people and `gate_report_<gate>.json` for machines.
 
 ### Answers to the Phase 2 open questions
 **Which checks stop the pipeline, and which only warn?** BLOCK means the data would be *wrong or unsafe* to use: PHI in the output, rows lost without a trace, two people in one golden record, broken keys, impossible values, a tampered audit log. WARN means *a human should look* but the data isn't wrong: blank rates creeping up, a longer review queue, row counts moving a lot, moderate re-identification risk.
@@ -180,6 +183,7 @@ Full counts: `data/answer_key/mess_manifest.json`.
 | Blank phone | 6.3% / 7.4% / 6.9% | 12% | — |
 | Blank systolic BP | 11.1% / 13.4% / 10.7% | 18% | — |
 | Patients unique on (age band, sex, ZIP3) | 6.9% / 6.6% / 7.1% | 5% | 20% |
+| Days since a source's newest data (worst system) | 2 / 2 / 5 | 7 days | 30 days |
 
 ### Decisions and tradeoffs
 | Decision | Chosen | Alternative | Why |
@@ -190,15 +194,18 @@ Full counts: `data/answer_key/mess_manifest.json`.
 | Publish | Stage, gate, then swap the folder in one step | Write straight to the published folder | Readers never see half-written or unchecked data |
 | On failure | Keep last good version, keep rejected tables in staging | Delete everything | Consumers keep working, and engineers can inspect what failed |
 | k-anonymity at 7% | WARN, not BLOCK | Block at 5% | It's a known, documented risk at this small scale; blocking every run would train people to ignore the gate |
+| Freshness | Checked **per source system**, on newest visit or registration update | One check on the newest row overall | A dead ER feed hides behind two healthy clinics if you only look at the overall max date |
+| Freshness units | Days | Hours | Our synthetic feeds have one visit every few days. A real hospital feed has hundreds a day, so there it would be hours |
 | Dev secret key | WARN in dev, BLOCK with `--strict` | Always block | Lets the demo run on a laptop without making it possible to ship weak pseudonyms |
 
 ### Results
-- Real run (seed 42): **35 checks, 0 failures, 2 warnings** (k-anonymity 7.1%, dev key). Published.
+- Real run (seed 42): **36 checks, 0 failures, 2 warnings** (k-anonymity 7.1%, dev key). Published.
 - `--strict` with no secret key: **blocked at the deid gate**, and published data was left unchanged.
-- Fault injection: **8 / 8 blocked** by the expected check (lost rows, merged twins, orphan visit, BP 999, quarantine spike, phone in a note, undocumented `ssn` column, edited audit log).
+- Fault injection: **9 / 9 blocked** by the expected check (lost rows, merged twins, orphan visit, BP 999, quarantine spike, ER feed silent for 60 days, phone in a note, undocumented `ssn` column, edited audit log).
 - Phase 1 and Phase 2 metrics unchanged after the refactor.
 
 ### Things noticed while building
+- Freshness was missing from the first version, even though it was in the Phase 3 spec. Every other check passes happily on stale data, so a dead feed is invisible without it. Added in review, with a fault-injection case.
 - A gate that has never failed hasn't been tested. The fault-injection script is what turns "we have checks" into "we know the checks fire".
 - The warning for 7% unique patients shows up on every run. That's correct, but repeated warnings get ignored. Phase 4 has to either fix it (wider bands, suppressing rare combinations) or formally accept it in the data card.
 

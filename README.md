@@ -36,7 +36,7 @@ python src/deidentify.py            # Phase 2: masked tables + docs/data_diction
 python src/access.py                # Phase 2: role-based access demo, writes the audit log
 python src/evaluate_phase2.py       # check for PHI leaks, re-identification risk, audit tampering
 python src/run_pipeline.py          # Phase 3: every step, with quality gates; stops on a failure
-python src/demo_gate_failures.py    # Phase 3: breaks the data 8 ways, proves each gate blocks it
+python src/demo_gate_failures.py    # Phase 3: breaks the data 9 ways, proves each gate blocks it
 pytest                              # unit tests for the cleaning and matching rules
 ```
 
@@ -72,7 +72,7 @@ Patient matching, graded on record pairs against the answer key:
 
 ## Phase 3 results
 
-`run_pipeline.py` runs 35 checks at two gates. **BLOCK** checks stop the run; **WARN** checks are reported, and the run continues.
+`run_pipeline.py` runs 36 checks at two gates. **BLOCK** checks stop the run; **WARN** checks are reported, and the run continues.
 
 ```
 pipeline.py ─▶ GATE clean ─▶ deidentify.py ─▶ data/staging/ ─▶ GATE deid ─▶ publish ─▶ data/deidentified/
@@ -82,10 +82,12 @@ pipeline.py ─▶ GATE clean ─▶ deidentify.py ─▶ data/staging/ ─▶ G
 
 | Gate | Blocks on | Warns on |
 |---|---|---|
-| clean (25 checks) | missing/undocumented columns, duplicate keys, broken links between tables, raw rows not accounted for, impossible values, **two people in one golden record**, quarantine > 10% | quarantine > 6%, review queue > 6%, unusual blank rates, row counts moved > 25% vs last good run |
+| clean (26 checks) | missing/undocumented columns, duplicate keys, broken links between tables, raw rows not accounted for, impossible values, **two people in one golden record**, a source feed silent > 30 days, quarantine > 10% | a source feed silent > 7 days, quarantine > 6%, review queue > 6%, unusual blank rates, row counts moved > 25% vs last good run |
 | deid (10 checks) | **any PHI in any cell**, direct-identifier columns, row counts ≠ clean, broken audit log, > 20% patients unique, dev key in `--strict` mode | > 5% patients unique, dev key |
 
-**Proving the gates work:** `demo_gate_failures.py` injects 8 faults into copies of the real output (5 visits silently lost, twins merged, an orphan visit, BP 999, a 12% quarantine spike, a phone number in a scrubbed note, an undocumented `ssn` column, an edited audit log). **8 / 8 are blocked by the expected check.**
+**Proving the gates work:** `demo_gate_failures.py` injects 9 faults into copies of the real output (5 visits silently lost, twins merged, an orphan visit, BP 999, a 12% quarantine spike, an ER feed that went silent 60 days ago, a phone number in a scrubbed note, an undocumented `ssn` column, an edited audit log). **9 / 9 are blocked by the expected check.**
+
+Each gate also writes a readable report, `data/quality/quality_report_<gate>.md`: what failed, why, and whether it blocks.
 
 Today's real run publishes with 2 honest warnings: 7.1% of patients are unique on (age band, sex, ZIP3), and the dev secret key is in use. With `--strict`, the dev key blocks publishing.
 - Thresholds come from the rates on seeds 7, 42 and 2026 plus headroom (e.g. encounter quarantine was 3.8–4.2%, so warn at 6%, block at 10%).
@@ -106,7 +108,7 @@ src/
   deidentify.py            # Phase 2: pseudonyms, generalisation, date shift, note scrubbing
   access.py                # Phase 2: role-based access + hash-chained audit log
   evaluate_phase2.py       # Phase 2: leak scan, k-anonymity, tamper test
-  quality_gates.py         # Phase 3: 35 BLOCK/WARN checks, no answer key needed
+  quality_gates.py         # Phase 3: 36 BLOCK/WARN checks, no answer key needed
   run_pipeline.py          # Phase 3: runs everything with gates; publishes only on a pass
   demo_gate_failures.py    # Phase 3: fault injection, proves each gate fires
 docs/data_dictionary.md    # generated: every column, classified

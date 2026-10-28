@@ -2,7 +2,7 @@
 demo_gate_failures.py  (Phase 3)
 
 A gate that has never failed hasn't been tested yet. This script breaks a copy
-of the real outputs in eight different ways and confirms the right gate blocks
+of the real outputs in nine different ways and confirms the right gate blocks
 each one. Nothing on disk is changed: every fault is applied to in-memory copies
 (the audit-log fault uses a temporary copy of the log).
 
@@ -55,6 +55,17 @@ def fault_quarantine_spike(c, d):
     return "clean", "quarantine_rate:encounters"
 
 
+def fault_stale_feed(c, d):
+    """The ER interface silently stopped 60 days ago: its newest data is 2 months old."""
+    days = pd.Timedelta(days=60)
+    enc, rec = c["encounters"], c["patient_records"]
+    er = enc["source_system"] == "er_system"
+    enc.loc[er, "admit_date"] = (pd.to_datetime(enc.loc[er, "admit_date"]) - days).dt.strftime("%Y-%m-%d")
+    er = rec["source_system"] == "er_system"
+    rec.loc[er, "record_updated_at"] = (pd.to_datetime(rec.loc[er, "record_updated_at"]) - days).dt.strftime("%Y-%m-%dT%H:%M:%S")
+    return "clean", "freshness"
+
+
 def fault_phi_in_note(c, d):
     notes = d["encounters_deid"]["diagnosis_note_scrubbed"]
     i = notes.first_valid_index()
@@ -77,7 +88,7 @@ def fault_tampered_audit_log(c, d, log_path):
 
 
 FAULTS = [fault_lost_rows, fault_wrong_merge, fault_orphan_encounter, fault_impossible_vitals,
-          fault_quarantine_spike, fault_phi_in_note, fault_undocumented_column, fault_tampered_audit_log]
+          fault_quarantine_spike, fault_stale_feed, fault_phi_in_note, fault_undocumented_column, fault_tampered_audit_log]
 
 
 def main():

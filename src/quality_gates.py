@@ -46,6 +46,11 @@ THRESHOLDS = {
     "max_records_per_patient":   {"warn": 4},      # 3 systems + 1 re-registration
     "row_count_drift":           {"warn": 0.25},   # vs the last run that passed every gate
     "unique_patient_share":      {"warn": 0.05, "block": 0.20},  # k-anonymity k = 1
+    # Days since a source system's newest activity (visit or registration update).
+    # Worst natural gap on seeds 7/42/2026 is 5 days, because these feeds are tiny
+    # (about one visit every few days). A real hospital feed has hundreds of rows a
+    # day, so there you'd measure this in hours, not days.
+    "freshness_days":            {"warn": 7, "block": 30},
     "null_rate": {                                 # warn-only, per column
         "patient_records": {"dob": 0.05, "first_name": 0.03, "phone": 0.12, "zip": 0.12, "sex": 0.12},
         "encounters": {"diagnosis_note": 0.06, "systolic_bp": 0.18},
@@ -79,8 +84,8 @@ class Check:
 
 def _rate_check(stage, name, rate, limits, what):
     """One metric with warn and/or block limits -> one Check, at the worst level it crosses."""
-    detail = f"{rate:.1%} {what} (warn > {limits.get('warn', float('nan')):.0%}" + \
-             (f", block > {limits['block']:.0%})" if "block" in limits else ")")
+    shown = [f"{level} > {limits[level]:.0%}" for level in ("warn", "block") if level in limits]
+    detail = f"{rate:.1%} {what} ({', '.join(shown)})"
     if "block" in limits and rate > limits["block"]:
         return Check(stage, name, "block", False, detail)
     if "warn" in limits and rate > limits["warn"]:
@@ -178,6 +183,33 @@ def check_merge_conflicts(stage, records):
                  f"{len(bad)} golden patients mix different first names or DOBs" + (f": {bad[:5]}" if bad else ""))
 
 
+def check_freshness(stage, records, encounters, as_of=cl.AS_OF_DATE):
+    """
+    Is every source system still sending data? A dead feed is silent: all other
+    checks pass on yesterday's data, and an AI model quietly learns from a world
+    that stopped updating. So we check EACH system separately; one dead feed
+    hidden behind two healthy ones is the case that actually happens.
+
+    "Newest activity" = latest admit date or registration update for that system.
+    In production you'd compare with the current time; here we use the extract
+    date, because the synthetic data is frozen on that day.
+    """
+    limits = THRESHOLDS["freshness_days"]
+    newest = pd.concat([
+        pd.DataFrame({"system": encounters["source_system"],
+                      "when": pd.to_datetime(encounters["admit_date"], errors="coerce")}),
+        pd.DataFrame({"system": records["source_system"],
+                      "when": pd.to_datetime(records["record_updated_at"], errors="coerce")}),
+    ]).groupby("system")["when"].max()
+    age_days = {system: (pd.Timestamp(as_of) - when.normalize()).days for system, when in newest.items()}
+
+    worst = max(age_days.values())
+    severity = "block" if worst > limits["block"] else "warn"
+    detail = (", ".join(f"{s} {d}d" for s, d in sorted(age_days.items()))
+              + f" since newest data (warn > {limits['warn']}d, block > {limits['block']}d)")
+    return Check(stage, "freshness", severity, worst <= limits["warn"], detail)
+
+
 def check_null_rates(stage, tables):
     out = []
     for table, limits in THRESHOLDS["null_rate"].items():
@@ -215,6 +247,7 @@ def clean_checks(t, last_good_path=QUALITY / "last_good_metrics.json"):
         check_reconciliation(s, t["raw_encounters"], enc, t["quarantine_encounters"], "encounters"),
         check_value_ranges(s, records, enc),
         check_merge_conflicts(s, records),
+        check_freshness(s, records, enc),
         _rate_check(s, "quarantine_rate:encounters",
                     len(t["quarantine_encounters"]) / len(t["raw_encounters"].drop_duplicates()),
                     THRESHOLDS["encounter_quarantine_rate"], "of encounters quarantined"),
@@ -332,17 +365,37 @@ def passed(checks):
     return all(c.status != "FAIL" for c in checks)
 
 
+def write_markdown_report(checks, stage, out=QUALITY):
+    """
+    The human-readable report: one file a data steward can open to see what
+    failed, why, and what to do. The JSON file is for machines; this is for people.
+    """
+    verdict = "PASSED" if passed(checks) else "FAILED: pipeline stopped, nothing was published"
+    lines = [f"# Quality gate report: {stage}", "",
+             f"**Result: {verdict}**", "",
+             "- **FAIL** blocks the pipeline. Fix the cause, then rerun.",
+             "- **WARN** does not block, but a person should look before trusting the output.", "",
+             "| Status | Check | Severity | Detail |", "|---|---|---|---|"]
+    for c in sorted(checks, key=lambda c: ("FAIL", "WARN", "PASS").index(c.status)):
+        detail = c.detail.replace("|", "/")      # a "|" would break the table
+        lines.append(f"| {c.status} | `{c.name}` | {c.severity} | {detail} |")
+    path = out / f"quality_report_{stage}.md"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
 def report(checks, stage, out=QUALITY):
     out.mkdir(parents=True, exist_ok=True)
     (out / f"gate_report_{stage}.json").write_text(json.dumps(
         {"stage": stage, "passed": passed(checks), "checks": [asdict(c) | {"status": c.status} for c in checks]},
         indent=2))
+    md_path = write_markdown_report(checks, stage, out)
     counts = {s: sum(c.status == s for c in checks) for s in ("PASS", "WARN", "FAIL")}
     print(f"\n=== Quality gate: {stage} ===  {counts['PASS']} pass, {counts['WARN']} warn, {counts['FAIL']} fail")
     for c in sorted(checks, key=lambda c: ("FAIL", "WARN", "PASS").index(c.status)):
         if c.status != "PASS":
             print(f"  {c.status}  {c.name:<38} {c.detail}")
-    print(f"  ({counts['PASS']} passing checks in {out / f'gate_report_{stage}.json'})")
+    print(f"  Full report: {md_path}")
     print(f"  GATE {'PASSED' if passed(checks) else 'FAILED: pipeline stopped'}")
     return passed(checks)
 
