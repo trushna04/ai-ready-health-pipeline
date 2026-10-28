@@ -7,6 +7,8 @@ data/clean/
 data/quarantine/
 data/review/
 data/eval/
+data/deidentified/
+data/audit/
 
 # Python
 __pycache__/

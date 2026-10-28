@@ -109,3 +109,49 @@ Full counts: `data/answer_key/mess_manifest.json`.
 ### Open questions for Phase 2
 - Which columns are PHI, and who is allowed to see each one unmasked?
 - How do we find PHI hidden in free-text notes (68 leaked phones, names and MRNs), not just in columns?
+
+---
+
+## Phase 2: Governance: PHI masking, data dictionary, access rules, audit log (2026-10-27)
+
+### What was built
+- `src/data_dictionary.py`: every column with a sensitivity level and its HIPAA Safe Harbor identifier type. `check_columns()` blocks publishing any table that has an undocumented column. Generates `docs/data_dictionary.md`.
+- `src/deidentify.py`: builds `patients_deid` and `encounters_deid`. Names and phones are removed, IDs become keyed-hash pseudonyms, DOB becomes an age band, ZIP becomes 3 digits, visit dates are shifted per patient, and notes are scrubbed.
+- `src/access.py`: role policy (`data_steward`, `ml_engineer`, `analyst`), a single `read_table()` entry point, and an append-only, hash-chained audit log.
+- `src/evaluate_phase2.py`: grades note scrubbing, leak-scans every output cell, measures k-anonymity, checks date shifting, and tamper-tests the audit log.
+- `tests/test_phase2.py`: 15 tests (28 in total).
+
+### Answers to the Phase 1 open questions
+**Which columns are PHI, and who can see them?** All 5 clean tables are classified column by column in the data dictionary. Full-PHI tables are for `data_steward` only, and only with an approved purpose (`patient_matching_review`, `data_quality_investigation`). `ml_engineer` gets de-identified tables with scrubbed notes. `analyst` gets de-identified tables without notes, because counts and trends don't need free text (HIPAA's "minimum necessary").
+
+**How do we find PHI inside free text?** Two layers. (1) Pattern rules for phones and the three MRN formats. (2) Names, found two ways: a capitalized word after "spouse", "mother" and so on is a name even if we've never seen it, and any Title-case word that matches a first or last name in our patient table. ALL-CAPS words are never treated as names, so `PT`, `MI` and `URI` survive.
+
+### Decisions and tradeoffs
+| Decision | Chosen | Alternative | Why |
+|---|---|---|---|
+| Patient/visit IDs | Keyed hash (HMAC-SHA256) | Plain SHA-256 / random IDs | Plain hashes of known ID formats can be brute-forced; random IDs break joins between runs |
+| Key storage | `PIPELINE_SECRET_KEY` env var, loud warning on a dev key | Key in code | Keys in code end up in git |
+| DOB | Age band only | Birth year (Safe Harbor allows it) | Birth year + sex + ZIP3 made 296 / 519 patients unique; age band: 37 |
+| Visit dates | Shift back 1–365 days, same offset per patient | Year only (strict Safe Harbor) | Phase 4 needs lengths of stay and time between visits. **Not strict Safe Harbor**: a real release would need Expert Determination |
+| Age 90+ | One "90+" band | Exact age | Safe Harbor rule: so few people are 90+ that age identifies them |
+| Note scrubbing | Regex + name dictionary + context words | ML/NER model | Explainable and testable; good enough for known patterns. Cloud DLP is the production answer |
+| Over-redaction risk | Only Title-case words in the name list | Every capitalized word | Keeps clinical text usable (0 of 1,195 clean notes changed) |
+| Access denial | Deny the whole request, log it | Quietly drop forbidden columns | A silent partial result hides the policy from the user and the auditor |
+| Audit log | Hash chain (each entry stores the previous entry's hash) | Plain log file | Edits and deletions become detectable |
+
+### Results (seed 42)
+- Notes: 67 leaked, **67 caught**, 0 with PHI left, 0 of 1,195 clean notes altered (21 phones, 21 MRNs, 25 names). Same on seeds 7 (52/52) and 2026 (53/53).
+- Leak scan over every cell of both de-identified tables: **0** phones, MRNs, record/patient IDs, full names, 5-digit ZIPs, or patients' own DOBs.
+- k-anonymity on (age band, sex, ZIP3): 37 patients unique, 178 with k < 5. Not zero, see below.
+- Date shift: lengths of stay and visit gaps identical to the real data; no real visit date is left unchanged.
+- Audit log: chain verifies; an edited copy fails at the edited entry, and a deleted entry is caught at the next one.
+
+### Things noticed while building
+- **"Safe Harbor-compliant" isn't the same as "safe".** The first version published birth year, as Safe Harbor allows. The k-anonymity check showed 57% of patients were the only one with their birth year + sex + ZIP3. Switching to age bands cut that to 7%.
+- **The first leak scan raised a false alarm:** 33 shifted visit dates matched *some* patient's DOB. They were coincidences (a shifted date landing on a toddler's birthday), so the check now asks the real question: does a patient's *own* DOB appear in their *own* rows?
+- pandas writes integer columns that have blanks as floats (`140.0`). Fixed by using the nullable `Int64` type in both the pipeline and de-identification.
+- 37 patients are still unique on (age band, sex, ZIP3), which is a real re-identification risk at this small scale (500 people). At production scale k grows naturally. Here, the options are wider bands or suppressing rare combinations; left for Phase 4 to decide with the ML needs in view.
+
+### Open questions for Phase 3
+- Which checks should **stop** the pipeline (e.g. any PHI leak, wrong-merge risk), and which should only warn?
+- Where do thresholds come from (e.g. how many quarantined rows is "too many")?

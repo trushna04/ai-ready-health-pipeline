@@ -16,8 +16,8 @@ Healthcare organizations want to build AI on their data, but the data isn't read
 |---|---|---|
 | 0 | Scaffolding + messy data generator | ✅ Done |
 | 1 | Ingestion, cleaning, **patient matching**, quarantine | ✅ Done |
-| 2 | Governance: PHI masking, data dictionary, access rules, audit log | ⏳ Next |
-| 3 | Quality gates that block the pipeline | — |
+| 2 | Governance: PHI masking, data dictionary, access rules, audit log | ✅ Done |
+| 3 | Quality gates that block the pipeline | ⏳ Next |
 | 4 | AI-ready outputs: features, train/eval split, labels, data card | — |
 | 5 | One-command demo + interview story | — |
 
@@ -32,6 +32,9 @@ python src/generate_messy_data.py   # writes data/raw/ and data/answer_key/
 python src/inspect_raw.py           # SQL profile proving the data is messy
 python src/pipeline.py              # Phase 1: clean, match, quarantine -> data/clean/
 python src/evaluate_phase1.py       # grade matching against the answer key
+python src/deidentify.py            # Phase 2: masked tables + docs/data_dictionary.md
+python src/access.py                # Phase 2: role-based access demo, writes the audit log
+python src/evaluate_phase2.py       # check for PHI leaks, re-identification risk, audit tampering
 pytest                              # unit tests for the cleaning and matching rules
 ```
 
@@ -50,6 +53,21 @@ Patient matching, graded on record pairs against the answer key:
 - 1,304 of 1,304 clean encounters link to the correct person. All 26 true orphan encounters are quarantined, and none of the 54 encounters whose MRN lost its leading zeros were wrongly called orphans.
 - Seeds 7 and 2026 give the same picture: 0 wrong merges, recall 0.94 and 0.91.
 
+## Phase 2 results (seed 42)
+
+| Check | Result |
+|---|---|
+| Notes with PHI leaked into free text | 67 / 67 scrubbed, 0 with PHI left, 0 of 1,195 clean notes changed |
+| Leak scan of every de-identified cell (phones, MRNs, IDs, names, ZIP5, own DOB) | **0 hits** |
+| Patients unique on quasi-identifiers (k = 1) | 296 if we published birth year (Safe Harbor allows it) → **37** with age band |
+| Date shifting | Lengths of stay and gaps between visits preserved exactly |
+| Access demo | 3 allowed, 4 denied, all 7 in the audit log |
+| Audit log tampering (edit or delete an entry) | Detected, with the entry number |
+
+- **Safe Harbor-compliant ≠ safe.** Publishing birth year + sex + 3-digit ZIP is allowed, but it makes 57% of these patients one of a kind. So the pipeline publishes less than the rule allows.
+- Every column is classified in [`docs/data_dictionary.md`](docs/data_dictionary.md). A table with an undocumented column can't be published.
+- Roles: `data_steward` (full PHI, approved purpose only), `ml_engineer` (de-identified + scrubbed notes), `analyst` (de-identified, no notes).
+
 The same `--seed` always produces identical files, so results are reproducible.
 
 ## Repo layout
@@ -62,6 +80,11 @@ src/
   match_patients.py        # Phase 1: blocking, scoring, vetoes, clustering
   pipeline.py              # Phase 1: raw -> clean tables, quarantine, review queue
   evaluate_phase1.py       # Phase 1: grades the pipeline (the only reader of answer_key/)
+  data_dictionary.py       # Phase 2: every column's meaning and sensitivity
+  deidentify.py            # Phase 2: pseudonyms, generalisation, date shift, note scrubbing
+  access.py                # Phase 2: role-based access + hash-chained audit log
+  evaluate_phase2.py       # Phase 2: leak scan, k-anonymity, tamper test
+docs/data_dictionary.md    # generated: every column, classified
 tests/                     # pytest unit tests for cleaning and matching rules
 data/                      # generated, not committed (see .gitignore)
   raw/                     # what the pipeline is allowed to read
@@ -69,6 +92,8 @@ data/                      # generated, not committed (see .gitignore)
   clean/                   # patient_records, golden_patients, encounters
   quarantine/              # rows held back, raw values kept, with a reason
   review/                  # possible matches for a human to decide
+  deidentified/            # masked tables for analysts and ML
+  audit/                   # access log (JSON lines, hash-chained)
 BUILD_LOG.md               # decisions and progress, phase by phase
 ```
 
@@ -89,6 +114,11 @@ Everything runs on a laptop. At company scale, each piece maps to a managed GCP 
 | `match_patients.py` | Custom matching in BigQuery SQL / Dataflow, or a managed MPI (master patient index) | Blocking is what makes this possible at scale |
 | `data/quarantine/` tables | Quarantine dataset in BigQuery | Same idea: bad rows kept with a reason, never silently dropped |
 | `data/review/` queue | A review table + simple app (e.g. AppSheet or Looker) for data stewards | Humans decide uncertain matches |
+| `scrub_note()` regex + name list | Sensitive Data Protection (Cloud DLP) | Managed detectors for 150+ PHI types, de-identify transforms incl. date shift |
+| `PIPELINE_SECRET_KEY` env var | Secret Manager / Cloud KMS | The pseudonym key never lives in code |
+| `data_dictionary.py` | Dataplex / Data Catalog + policy tags | Sensitivity labels attached to columns |
+| `access.py` policy | BigQuery column-level security (policy tags) + authorized views | Enforced by the database, not by Python |
+| `data/audit/access_log.jsonl` | Cloud Audit Logs (Data Access logs) → locked log bucket | Immutable, outside the data team's control |
 
 More rows (masking, access rules, audit logs, quality checks) are added as those phases are built.
 
@@ -97,6 +127,8 @@ More rows (masking, access rules, audit logs, quality checks) are added as those
 - The mess is designed by the generator, so the pipeline is partly tested against problems we already know about. Real data has surprises.
 - Small scale (hundreds of patients, not millions).
 - No HL7/FHIR feeds, claims data, or real clinical coding (ICD-10).
+- The note scrubber is tested on the three PHI patterns the generator leaks. Real notes leak addresses, dates, ages and names in many more ways; production would use a managed detector (Cloud DLP) plus human spot checks.
+- Access rules are enforced in Python. Anyone with file access can read the CSVs directly. Real enforcement belongs in the database (BigQuery policy tags).
 
 ## Architecture
 

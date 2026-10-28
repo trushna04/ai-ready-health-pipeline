@@ -237,6 +237,9 @@ def main():
         row["golden_patient_id"] = patient["golden_patient_id"]
         good.append(row)
     clean_encounters = pd.DataFrame(good)
+    # Int64 (capital I) allows blanks; plain int would turn every number into a float like 140.0.
+    for col in (*clean.VITAL_RANGES, "length_of_stay_days"):
+        clean_encounters[col] = clean_encounters[col].astype("Int64")
     encounter_quarantine = pd.concat(held, ignore_index=True)
     summary["clean_encounters"] = len(clean_encounters)
     summary["quarantined_encounters"] = len(encounter_quarantine)
