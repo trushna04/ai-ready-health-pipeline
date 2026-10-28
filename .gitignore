@@ -9,6 +9,9 @@ data/review/
 data/eval/
 data/deidentified/
 data/audit/
+data/staging/
+data/quality/
+data/deidentified.incoming/
 
 # Python
 __pycache__/

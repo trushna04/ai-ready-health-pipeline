@@ -130,9 +130,11 @@ def scrub_note(note, known_names):
 
 # ---------------------------------------------------------------------------
 
-def main():
+def main(out=OUT):
+    """out: where to write. run_pipeline.py writes to a staging folder first,
+    and only publishes to data/deidentified/ if the quality gates pass."""
     key = secret_key()
-    OUT.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     golden = pd.read_csv(CLEAN / "golden_patients.csv", dtype=str)
     encounters = pd.read_csv(CLEAN / "encounters.csv", dtype=str)
     records = pd.read_csv(CLEAN / "patient_records.csv", dtype=str)
@@ -189,7 +191,7 @@ def main():
     tables = {"patients_deid": patients, "encounters_deid": encs}
     for name, df in tables.items():
         check_columns(name, df.columns)
-        df.to_csv(OUT / f"{name}.csv", index=False)
+        df.to_csv(out / f"{name}.csv", index=False)
 
     table_columns = {"patient_records": list(records.columns), "golden_patients": list(golden.columns),
                      "encounters": list(encounters.columns),
@@ -202,10 +204,10 @@ def main():
                "notes_with_redactions": int((encs["diagnosis_note_scrubbed"].fillna("").str.contains(r"\[(?:PHONE|MRN|NAME)\]")).sum()),
                "redactions_by_kind": redactions,
                "patients_age_90_plus": int((patients["age_band"] == "90+").sum())}
-    (OUT / "phase2_summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "phase2_summary.json").write_text(json.dumps(summary, indent=2))
     for k, v in summary.items():
         print(f"{k:<32} {v}")
-    print("Wrote data/deidentified/ and docs/data_dictionary.md")
+    print(f"Wrote {out}/ and docs/data_dictionary.md")
 
 
 if __name__ == "__main__":

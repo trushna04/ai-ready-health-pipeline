@@ -155,3 +155,54 @@ Full counts: `data/answer_key/mess_manifest.json`.
 ### Open questions for Phase 3
 - Which checks should **stop** the pipeline (e.g. any PHI leak, wrong-merge risk), and which should only warn?
 - Where do thresholds come from (e.g. how many quarantined rows is "too many")?
+
+---
+
+## Phase 3: Quality gates that block the pipeline (2026-10-28)
+
+### What was built
+- `src/quality_gates.py`: 35 checks in two stages, each marked BLOCK or WARN. No check reads the answer key, because production data doesn't come with one.
+- `src/run_pipeline.py`: runs clean → gate → de-identify into **staging** → gate → publish. A failed gate stops the run, and `data/deidentified/` keeps the last good version. Every run is logged to `data/quality/run_history.jsonl`. `--strict` (production mode) turns the dev secret key into a blocker.
+- `src/demo_gate_failures.py`: injects 8 realistic faults into in-memory copies and confirms the expected check blocks each one.
+- `src/deidentify.py`: now takes an output folder, so the orchestrator can stage before publishing.
+- `tests/test_phase3.py`: 11 tests (39 in total).
+
+### Answers to the Phase 2 open questions
+**Which checks stop the pipeline, and which only warn?** BLOCK means the data would be *wrong or unsafe* to use: PHI in the output, rows lost without a trace, two people in one golden record, broken keys, impossible values, a tampered audit log. WARN means *a human should look* but the data isn't wrong: blank rates creeping up, a longer review queue, row counts moving a lot, moderate re-identification risk.
+
+**Where do thresholds come from?** From the rates observed on three seeds (7, 42, 2026), plus headroom. In a real system they'd start the same way, from a few weeks of history, then get tuned as false alarms come in. Row-count drift compares against the **last run that passed every gate**, not the last run, so one bad run can't become the new normal.
+
+| Metric | Seeds 7 / 2026 / 42 | Warn | Block |
+|---|---|---|---|
+| Encounters quarantined | 3.8% / 3.9% / 4.2% | 6% | 10% |
+| Records with a pair in review | 3.8% / 3.3% / 4.3% | 6% | — |
+| Blank DOB | 2.5% / 2.8% / 2.6% | 5% | — |
+| Blank phone | 6.3% / 7.4% / 6.9% | 12% | — |
+| Blank systolic BP | 11.1% / 13.4% / 10.7% | 18% | — |
+| Patients unique on (age band, sex, ZIP3) | 6.9% / 6.6% / 7.1% | 5% | 20% |
+
+### Decisions and tradeoffs
+| Decision | Chosen | Alternative | Why |
+|---|---|---|---|
+| Gate framework | Plain Python checks | Great Expectations / dbt tests | Every rule is readable in one file; the GCP column in the README shows the managed equivalent |
+| Wrong-merge detection without an answer key | Block if a golden record has 2+ first names or DOBs | Trust the matcher | Catches a matcher regression even though the matching rules "should" make it impossible |
+| Row reconciliation | raw = clean + quarantined + exact duplicates, or block | Only count clean rows | Silent row loss is the bug nobody notices |
+| Publish | Stage, gate, then swap the folder in one step | Write straight to the published folder | Readers never see half-written or unchecked data |
+| On failure | Keep last good version, keep rejected tables in staging | Delete everything | Consumers keep working, and engineers can inspect what failed |
+| k-anonymity at 7% | WARN, not BLOCK | Block at 5% | It's a known, documented risk at this small scale; blocking every run would train people to ignore the gate |
+| Dev secret key | WARN in dev, BLOCK with `--strict` | Always block | Lets the demo run on a laptop without making it possible to ship weak pseudonyms |
+
+### Results
+- Real run (seed 42): **35 checks, 0 failures, 2 warnings** (k-anonymity 7.1%, dev key). Published.
+- `--strict` with no secret key: **blocked at the deid gate**, and published data was left unchanged.
+- Fault injection: **8 / 8 blocked** by the expected check (lost rows, merged twins, orphan visit, BP 999, quarantine spike, phone in a note, undocumented `ssn` column, edited audit log).
+- Phase 1 and Phase 2 metrics unchanged after the refactor.
+
+### Things noticed while building
+- A gate that has never failed hasn't been tested. The fault-injection script is what turns "we have checks" into "we know the checks fire".
+- The warning for 7% unique patients shows up on every run. That's correct, but repeated warnings get ignored. Phase 4 has to either fix it (wider bands, suppressing rare combinations) or formally accept it in the data card.
+
+### Open questions for Phase 4
+- What's the ML task: predicting the diagnosis category from the note, or something structured like length of stay?
+- How do we split train/eval so the **same patient** never appears in both (leakage)?
+- What goes in the data card: known gaps, the 7% re-identification risk, synthetic-data limits?

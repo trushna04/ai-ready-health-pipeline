@@ -17,8 +17,8 @@ Healthcare organizations want to build AI on their data, but the data isn't read
 | 0 | Scaffolding + messy data generator | ✅ Done |
 | 1 | Ingestion, cleaning, **patient matching**, quarantine | ✅ Done |
 | 2 | Governance: PHI masking, data dictionary, access rules, audit log | ✅ Done |
-| 3 | Quality gates that block the pipeline | ⏳ Next |
-| 4 | AI-ready outputs: features, train/eval split, labels, data card | — |
+| 3 | Quality gates that block the pipeline | ✅ Done |
+| 4 | AI-ready outputs: features, train/eval split, labels, data card | ⏳ Next |
 | 5 | One-command demo + interview story | — |
 
 ## Quickstart
@@ -35,6 +35,8 @@ python src/evaluate_phase1.py       # grade matching against the answer key
 python src/deidentify.py            # Phase 2: masked tables + docs/data_dictionary.md
 python src/access.py                # Phase 2: role-based access demo, writes the audit log
 python src/evaluate_phase2.py       # check for PHI leaks, re-identification risk, audit tampering
+python src/run_pipeline.py          # Phase 3: every step, with quality gates; stops on a failure
+python src/demo_gate_failures.py    # Phase 3: breaks the data 8 ways, proves each gate blocks it
 pytest                              # unit tests for the cleaning and matching rules
 ```
 
@@ -68,6 +70,26 @@ Patient matching, graded on record pairs against the answer key:
 - Every column is classified in [`docs/data_dictionary.md`](docs/data_dictionary.md). A table with an undocumented column can't be published.
 - Roles: `data_steward` (full PHI, approved purpose only), `ml_engineer` (de-identified + scrubbed notes), `analyst` (de-identified, no notes).
 
+## Phase 3 results
+
+`run_pipeline.py` runs 35 checks at two gates. **BLOCK** checks stop the run; **WARN** checks are reported, and the run continues.
+
+```
+pipeline.py ─▶ GATE clean ─▶ deidentify.py ─▶ data/staging/ ─▶ GATE deid ─▶ publish ─▶ data/deidentified/
+                  │ fail                                           │ fail
+                  └──────────── stop: published data unchanged ◀───┘
+```
+
+| Gate | Blocks on | Warns on |
+|---|---|---|
+| clean (25 checks) | missing/undocumented columns, duplicate keys, broken links between tables, raw rows not accounted for, impossible values, **two people in one golden record**, quarantine > 10% | quarantine > 6%, review queue > 6%, unusual blank rates, row counts moved > 25% vs last good run |
+| deid (10 checks) | **any PHI in any cell**, direct-identifier columns, row counts ≠ clean, broken audit log, > 20% patients unique, dev key in `--strict` mode | > 5% patients unique, dev key |
+
+**Proving the gates work:** `demo_gate_failures.py` injects 8 faults into copies of the real output (5 visits silently lost, twins merged, an orphan visit, BP 999, a 12% quarantine spike, a phone number in a scrubbed note, an undocumented `ssn` column, an edited audit log). **8 / 8 are blocked by the expected check.**
+
+Today's real run publishes with 2 honest warnings: 7.1% of patients are unique on (age band, sex, ZIP3), and the dev secret key is in use. With `--strict`, the dev key blocks publishing.
+- Thresholds come from the rates on seeds 7, 42 and 2026 plus headroom (e.g. encounter quarantine was 3.8–4.2%, so warn at 6%, block at 10%).
+
 The same `--seed` always produces identical files, so results are reproducible.
 
 ## Repo layout
@@ -84,6 +106,9 @@ src/
   deidentify.py            # Phase 2: pseudonyms, generalisation, date shift, note scrubbing
   access.py                # Phase 2: role-based access + hash-chained audit log
   evaluate_phase2.py       # Phase 2: leak scan, k-anonymity, tamper test
+  quality_gates.py         # Phase 3: 35 BLOCK/WARN checks, no answer key needed
+  run_pipeline.py          # Phase 3: runs everything with gates; publishes only on a pass
+  demo_gate_failures.py    # Phase 3: fault injection, proves each gate fires
 docs/data_dictionary.md    # generated: every column, classified
 tests/                     # pytest unit tests for cleaning and matching rules
 data/                      # generated, not committed (see .gitignore)
@@ -94,6 +119,8 @@ data/                      # generated, not committed (see .gitignore)
   review/                  # possible matches for a human to decide
   deidentified/            # masked tables for analysts and ML
   audit/                   # access log (JSON lines, hash-chained)
+  staging/                 # de-identified tables waiting for the deid gate
+  quality/                 # gate reports, run history, last good run's counts
 BUILD_LOG.md               # decisions and progress, phase by phase
 ```
 
@@ -119,6 +146,9 @@ Everything runs on a laptop. At company scale, each piece maps to a managed GCP 
 | `data_dictionary.py` | Dataplex / Data Catalog + policy tags | Sensitivity labels attached to columns |
 | `access.py` policy | BigQuery column-level security (policy tags) + authorized views | Enforced by the database, not by Python |
 | `data/audit/access_log.jsonl` | Cloud Audit Logs (Data Access logs) → locked log bucket | Immutable, outside the data team's control |
+| `quality_gates.py` | Dataplex data quality scans / dbt tests / Great Expectations | Same BLOCK/WARN idea as declarative rules |
+| `run_pipeline.py` (stop on FAIL) | Cloud Composer DAG with a gate task; failure halts downstream tasks and alerts | Retries, alerts, run history built in |
+| staging → publish swap | Write to a staging dataset, then swap the table/view used by readers | Readers never see half-checked data |
 
 More rows (masking, access rules, audit logs, quality checks) are added as those phases are built.
 
