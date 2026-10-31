@@ -260,3 +260,30 @@ Both tasks: **A.** scrubbed note → 6 diagnosis categories (clinical NLP), and 
 ### Open questions for Phase 5
 - One command for everything: should it also build the AI dataset and card, or stop at publishing?
 - What would change at real scale: notes from a real EHR, coder labels with agreement scores, and resolving the review queue before splitting.
+
+---
+
+## Phase 5: One-command demo + interview story (2026-10-31)
+
+### What was built
+- `src/demo.py`: the whole project in one command (9 steps, about 5 seconds). Each step runs as its own script, exactly as by hand, so the demo can't hide anything. Full output goes to `data/demo_log.txt`; the screen shows a results summary. If any step fails, the demo stops and names the step.
+- README rewritten for a reader with 30 seconds: what the problem is in plain language, a results-at-a-glance table, one-command quickstart, an architecture diagram (Mermaid, renders on GitHub), per-phase details, "what I'd do differently at real scale", and a 2-minute interview script.
+- `.github/workflows/tests.yml`: GitHub Actions runs the full demo and all 46 tests on every push. A failed quality gate turns the badge red.
+- `LICENSE` (MIT).
+
+### Answers to the Phase 4 open questions
+**Should one command also build the AI dataset and card?** Yes. The story ends at the data card, so the demo does too. `run_pipeline.py` still stops at publishing, because that's the production boundary: the AI dataset is a consumer of published data, not part of publishing it.
+**What changes at real scale?** Written up as a table in the README: probabilistic matching tuned on steward decisions, the review queue resolved before splitting, Cloud DLP instead of regex, access enforced in BigQuery, thresholds from real history, coder labels with agreement, and an eval set of unseen notes.
+
+### Decisions and tradeoffs
+| Decision | Chosen | Alternative | Why |
+|---|---|---|---|
+| How the demo runs steps | Each script as a subprocess | Import and call each `main()` | Identical to running by hand; one script's `sys.exit` can't kill the demo silently |
+| Demo starts by deleting `data/` | Yes | Reuse existing outputs | Outputs from a different seed would mix with new ones |
+| CI runs the demo, not just unit tests | Yes | `pytest` only | The gates are the real tests: if the pipeline can't publish, CI should fail |
+| Interview numbers | From seed 42, matched to the demo output | Rounded "about" numbers | Anyone can run the demo and get the exact same numbers |
+
+### Results
+- `python src/demo.py`: 9 / 9 steps pass on seeds 42, 7 and 2026; 42 checks across 3 gates, 0 failures.
+- Fresh virtual environment with only `requirements.txt`: demo and 46 tests pass, so CI will too.
+- Removing a step's script makes the demo stop at that step with a pointer to the log.

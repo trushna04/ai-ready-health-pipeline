@@ -13,6 +13,7 @@ data/staging/
 data/quality/
 data/deidentified.incoming/
 data/ai_ready/
+data/demo_log.txt
 
 # Python
 __pycache__/

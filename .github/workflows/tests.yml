@@ -1,0 +1,22 @@
+# Runs on every push and pull request: the whole demo end to end, then the unit tests.
+# If any quality gate fails, demo.py exits with an error and this check goes red.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run the full pipeline demo
+        run: python src/demo.py
+      - name: Run unit tests
+        run: pytest -q
